@@ -21,6 +21,7 @@ let skipped = 0;
 let closed = 0;
 let netBlocked = 0;
 let blockingEnabled = true;
+let forcedFastForward = false;
 
 function render() {
   if (!blockingEnabled) {
@@ -40,22 +41,100 @@ function render() {
   `;
 }
 
-// --- Observe page ---
-new MutationObserver(() => {
-  const s = document.querySelector(".ytp-ad-skip-button, .ytp-ad-skip-button-modern");
-  if (s) {
-    s.click();
-    skipped++;
-    render();
+const SKIP_SELECTORS = [
+  ".ytp-ad-skip-button",
+  ".ytp-ad-skip-button-modern",
+  ".ytp-ad-skip-button-icon",
+  ".ytp-ad-player-overlay-skip-button",
+];
+const OVERLAY_SELECTORS = [
+  ".ytp-ad-overlay-close-button",
+  ".ytp-ad-image-overlay-close-button",
+  ".ytp-ad-overlay-close-button-icon",
+];
+const CLICK_DEBOUNCE = 400;
+let lastSkipClick = 0;
+let lastOverlayClick = 0;
+
+function findVisibleElement(selectors) {
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (!el) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) continue;
+    return el;
+  }
+  return null;
+}
+
+function handleSkipButton() {
+  if (!blockingEnabled) return;
+  const now = Date.now();
+  if (now - lastSkipClick < CLICK_DEBOUNCE) return;
+
+  const btn = findVisibleElement(SKIP_SELECTORS);
+  if (!btn) return;
+
+  btn.click();
+  lastSkipClick = now;
+  skipped++;
+  render();
+}
+
+function handleOverlayClose() {
+  if (!blockingEnabled) return;
+  const now = Date.now();
+  if (now - lastOverlayClick < CLICK_DEBOUNCE) return;
+
+  const btn = findVisibleElement(OVERLAY_SELECTORS);
+  if (!btn) return;
+
+  btn.click();
+  lastOverlayClick = now;
+  closed++;
+  render();
+}
+
+function handleVideoAds() {
+  if (!blockingEnabled) return;
+
+  const player = document.querySelector("video.html5-main-video");
+  const playerRoot = document.querySelector(".html5-video-player");
+  if (!player || !playerRoot) return;
+
+  const adShowing = playerRoot.classList.contains("ad-showing");
+  if (!adShowing) {
+    if (forcedFastForward) {
+      player.playbackRate = 1;
+      player.muted = false;
+      forcedFastForward = false;
+    }
+    return;
   }
 
-  const o = document.querySelector(".ytp-ad-overlay-close-button");
-  if (o) {
-    o.click();
-    closed++;
-    render();
+  // Attempt to jump to the end of the ad immediately
+  if (isFinite(player.duration) && player.duration > 0) {
+    const epsilon = 0.05;
+    if (player.currentTime < player.duration - epsilon) {
+      player.currentTime = player.duration;
+      skipped++;
+      render();
+    }
+    return;
   }
-}).observe(document.body, { childList: true, subtree: true });
+
+  // Fall back to fast-forwarding unskippable ads
+  player.playbackRate = 16;
+  player.muted = true;
+  forcedFastForward = true;
+}
+
+setInterval(() => {
+  handleSkipButton();
+  handleOverlayClose();
+}, 200);
+
+setInterval(handleVideoAds, 400);
 
 // --- Listen from background ---
 chrome.runtime.onMessage.addListener((msg) => {
