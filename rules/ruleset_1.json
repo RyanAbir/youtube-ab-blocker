@@ -1,0 +1,16 @@
+[
+  { "priority": 1, "action": { "type": "block" },
+    "condition": { "urlFilter": "doubleclick.net", "resourceTypes": ["script", "image", "xmlhttprequest"] } },
+  { "priority": 1, "action": { "type": "block" },
+    "condition": { "urlFilter": "youtube.com/api/stats/ads", "resourceTypes": ["xmlhttprequest", "script"] } },
+  { "priority": 1, "action": { "type": "block" },
+    "condition": { "urlFilter": "youtube.com/get_video_info?adformat=", "resourceTypes": ["xmlhttprequest"] } },
+  { "priority": 1, "action": { "type": "block" },
+    "condition": { "urlFilter": "googleads.g.doubleclick.net", "resourceTypes": ["xmlhttprequest", "image", "script"] } },
+  { "priority": 1, "action": { "type": "block" },
+    "condition": { "urlFilter": "youtube.com/yva_video", "resourceTypes": ["xmlhttprequest"] } },
+  { "priority": 1, "action": { "type": "block" },
+    "condition": { "urlFilter": "pagead2.googlesyndication.com", "resourceTypes": ["script", "image"] } },
+  { "priority": 1, "action": { "type": "block" },
+    "condition": { "urlFilter": "googlevideo.com/videoplayback*ctier=L", "resourceTypes": ["media"] } }
+]

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>YouTube Ad Blocker Settings</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      margin: 30px;
+      background: #f9f9f9;
+      color: #333;
+    }
+    h1, h2 { text-align: center; }
+    .container {
+      max-width: 450px;
+      margin: 40px auto;
+      background: #fff;
+      padding: 25px 30px;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .toggle-container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 20px 0;
+    }
+    .toggle-container label { font-size: 16px; font-weight: 500; }
+    .status { text-align: center; margin-top: 10px; color: #666; }
+    input[type="checkbox"] { transform: scale(1.4); cursor: pointer; }
+    #whitelistInput {
+      width: 70%;
+      padding: 6px;
+      margin-right: 6px;
+    }
+    #whitelistList li { margin: 6px 0; }
+    button { cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>Extension Settings</h1>
+  <div class="container">
+    <div class="toggle-container">
+      <label for="blockToggle">Enable Ad Blocking</label>
+      <input type="checkbox" id="blockToggle">
+    </div>
+    <p class="status" id="statusMsg">Loading...</p>
+
+    <hr>
+    <h2>Whitelist Channels</h2>
+    <p>Add YouTube channel names (like <b>@LinusTechTips</b>) to allow ads on them.</p>
+    <input type="text" id="whitelistInput" placeholder="Enter channel name">
+    <button id="addWhitelistBtn">Add</button>
+    <ul id="whitelistList"></ul>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>
