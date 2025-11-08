@@ -1,3 +1,5 @@
+import { extractChannelHandle, isWhitelistedChannel } from "./lib/channel-utils.js";
+
 // === Safe boot sequence ===
 console.log("YouTube Ad Blocker service-worker starting...");
 
@@ -58,13 +60,20 @@ chrome.runtime.onInstalled.addListener(initializeRules);
 chrome.runtime.onStartup.addListener(initializeRules);
 
 // Debug listener for blocked requests
+function safeSend(tabId, message) {
+  chrome.tabs.sendMessage(tabId, message, () => {
+    const err = chrome.runtime.lastError;
+    if (err && !/Receiving end does not exist/i.test(err.message)) {
+      console.warn("tabs.sendMessage failed:", err.message);
+    }
+  });
+}
+
 if (chrome.declarativeNetRequest.onRuleMatchedDebug) {
   chrome.declarativeNetRequest.onRuleMatchedDebug.addListener(() => {
     blockedCount++;
     chrome.tabs.query({ url: "*://*.youtube.com/*" }, (tabs) =>
-      tabs.forEach((t) =>
-        chrome.tabs.sendMessage(t.id, { action: "updateBlocked", count: blockedCount })
-      )
+      tabs.forEach((t) => safeSend(t.id, { action: "updateBlocked", count: blockedCount }))
     );
   });
 }
@@ -92,10 +101,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       case "requestStats":
         if (sender.tab?.id) {
-          chrome.tabs.sendMessage(sender.tab.id, {
-            action: "updateBlocked",
-            count: blockedCount,
-          });
+          safeSend(sender.tab.id, { action: "updateBlocked", count: blockedCount });
         }
         break;
     }
@@ -108,13 +114,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.tabs.onUpdated.addListener((id, info, tab) => {
   if (!blockingEnabled || !info.url || !tab?.url) return;
 
-  if (tab.url.includes("youtube.com/@")) {
-    const ch = tab.url.split("youtube.com/@")[1].split("/")[0];
-    if (currentWhitelist.includes(ch)) {
-      clearDynamicRules().then(() => console.log(`Whitelist pause for ${ch}`));
-    } else {
-      reloadRules();
-    }
+  const handle = extractChannelHandle(tab.url);
+  if (!handle) return;
+
+  if (isWhitelistedChannel(handle, currentWhitelist)) {
+    clearDynamicRules().then(() => console.log(`Whitelist pause for ${handle}`));
+  } else {
+    reloadRules();
   }
 });
 
