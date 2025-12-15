@@ -52,6 +52,12 @@ const OVERLAY_SELECTORS = [
   ".ytp-ad-image-overlay-close-button",
   ".ytp-ad-overlay-close-button-icon",
 ];
+const ENFORCEMENT_SELECTORS = [
+  "ytd-enforcement-message-view-model",
+  "ytd-enforcement-message-renderer",
+  "ytd-popup-container tp-yt-paper-dialog",
+  "tp-yt-iron-overlay-backdrop",
+];
 const CLICK_DEBOUNCE = 400;
 let lastSkipClick = 0;
 let lastOverlayClick = 0;
@@ -129,12 +135,43 @@ function handleVideoAds() {
   forcedFastForward = true;
 }
 
+// Remove YouTube's anti-adblock enforcement dialog and keep playback running.
+function squashEnforcement() {
+  if (!blockingEnabled) return;
+
+  let removed = false;
+  for (const selector of ENFORCEMENT_SELECTORS) {
+    document.querySelectorAll(selector).forEach((el) => {
+      const text = (el.textContent || "").toLowerCase();
+      if (text.includes("ad blockers violate") || text.includes("ad blocker")) {
+        el.remove();
+        removed = true;
+      }
+    });
+  }
+
+  if (removed) {
+    document.documentElement.style.overflow = "";
+    document.body.style.overflow = "";
+
+    const playerRoot = document.querySelector(".html5-video-player");
+    if (playerRoot) {
+      playerRoot.classList.remove("ad-interrupting");
+    }
+    const video = document.querySelector("video.html5-main-video");
+    if (video && video.paused) {
+      video.play().catch(() => {});
+    }
+  }
+}
+
 setInterval(() => {
   handleSkipButton();
   handleOverlayClose();
 }, 200);
 
 setInterval(handleVideoAds, 400);
+setInterval(squashEnforcement, 800);
 
 // --- Listen from background ---
 chrome.runtime.onMessage.addListener((msg) => {

@@ -7,6 +7,7 @@ Chrome extension that blocks YouTube ads with dynamic rules, auto-skips in-playe
 - **Auto-skip overlay** injected into every YouTube tab that clicks the “Skip” and overlay-close buttons as soon as they appear and shows live stats.
 - **Channel whitelist & toggle** managed through the Options page and stored in `chrome.storage`.
 - **Rule-state awareness** so disabling or whitelisting actually unloads the DNR rules until you re-enable blocking.
+- **Anti-enforcement removal** that clears YouTube’s anti-adblock dialog/backdrop and resumes playback automatically.
 - **Unit-tested channel utilities** (Node’s built-in test runner) to ensure handle detection stays accurate.
 
 ## Project Structure
@@ -54,6 +55,7 @@ Chrome extension that blocks YouTube ads with dynamic rules, auto-skips in-playe
 - The repository is initialized with Git; make sure to reload after changes so MV3 picks up the latest files.
 
 ## Troubleshooting
+- If YouTube shows an “Ad blockers violate YouTube’s Terms of Service” dialog, reload the extension in `chrome://extensions` (so the anti-enforcement remover is active) and refresh the YouTube tab.
 - **Receiving end does not exist** warnings are handled internally; they surface only if a message truly can’t be delivered.
 - If the overlay shows “Blocking is disabled,” confirm the toggle in the Options page and reload the tab.
 - After editing DNR rules, you must reload the extension to re-register rules.
