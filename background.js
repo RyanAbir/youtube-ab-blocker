@@ -6,6 +6,9 @@ console.log("YouTube Ad Blocker service-worker starting...");
 let currentWhitelist = [];
 let blockedCount = 0;
 let blockingEnabled = true;
+let userDisabled = false;
+let tempDisableUntil = 0;
+let tempDisableTimer = null;
 
 function loadStoredState() {
   return new Promise((resolve) => {
@@ -28,6 +31,11 @@ async function clearDynamicRules() {
 
 // --- helper: reload all rules safely ---
 async function reloadRules() {
+  if (tempDisableUntil > Date.now()) {
+    console.log("Temporary disable active, skipping rule load.");
+    return;
+  }
+
   if (!blockingEnabled) {
     console.log("Blocking disabled, skipping rule load.");
     return;
@@ -48,6 +56,7 @@ async function reloadRules() {
 
 async function initializeRules() {
   await loadStoredState();
+  userDisabled = blockingEnabled === false;
   if (blockingEnabled) {
     await reloadRules();
   } else {
@@ -84,12 +93,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     switch (msg.action) {
       case "disableBlocking":
         blockingEnabled = false;
+        userDisabled = true;
         await clearDynamicRules();
         console.log("Blocking disabled");
         break;
 
       case "enableBlocking":
         blockingEnabled = true;
+        userDisabled = false;
         await reloadRules();
         console.log("Blocking enabled");
         break;
@@ -104,6 +115,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           safeSend(sender.tab.id, { action: "updateBlocked", count: blockedCount });
         }
         break;
+
+      case "tempDisableBlocking": {
+        if (userDisabled) break;
+        const durationMs = Math.max(1000, Number(msg.durationMs) || 15000);
+        tempDisableUntil = Date.now() + durationMs;
+        blockingEnabled = false;
+        await clearDynamicRules();
+        if (tempDisableTimer) clearTimeout(tempDisableTimer);
+        tempDisableTimer = setTimeout(async () => {
+          if (userDisabled) return;
+          tempDisableUntil = 0;
+          blockingEnabled = true;
+          await reloadRules();
+        }, durationMs);
+        console.log("Blocking temporarily disabled for", durationMs, "ms");
+        break;
+      }
     }
     sendResponse({ ok: true });
   })();
@@ -112,7 +140,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // Channel-based whitelist check
 chrome.tabs.onUpdated.addListener((id, info, tab) => {
-  if (!blockingEnabled || !info.url || !tab?.url) return;
+  if (tempDisableUntil > Date.now() || !blockingEnabled || !info.url || !tab?.url) return;
 
   const handle = extractChannelHandle(tab.url);
   if (!handle) return;
