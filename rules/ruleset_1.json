@@ -10,7 +10,5 @@
   { "priority": 1, "action": { "type": "block" },
     "condition": { "urlFilter": "youtube.com/yva_video", "resourceTypes": ["xmlhttprequest"] } },
   { "priority": 1, "action": { "type": "block" },
-    "condition": { "urlFilter": "pagead2.googlesyndication.com", "resourceTypes": ["script", "image"] } },
-  { "priority": 1, "action": { "type": "block" },
-    "condition": { "urlFilter": "googlevideo.com/videoplayback*ctier=L", "resourceTypes": ["media"] } }
+    "condition": { "urlFilter": "pagead2.googlesyndication.com", "resourceTypes": ["script", "image"] } }
 ]
