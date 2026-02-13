@@ -22,6 +22,9 @@ let closed = 0;
 let netBlocked = 0;
 let blockingEnabled = true;
 let forcedFastForward = false;
+let adStartTime = 0;
+let lastVideoTime = 0;
+let lastVideoProgress = 0;
 
 function render() {
   if (!blockingEnabled) {
@@ -59,8 +62,24 @@ const ENFORCEMENT_SELECTORS = [
   "tp-yt-iron-overlay-backdrop",
 ];
 const CLICK_DEBOUNCE = 400;
+const STUCK_AD_MS = 2000;
 let lastSkipClick = 0;
 let lastOverlayClick = 0;
+let observedSkip = false;
+
+function forceClick(el) {
+  const events = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
+  for (const type of events) {
+    el.dispatchEvent(
+      new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+      })
+    );
+  }
+}
 
 function findVisibleElement(selectors) {
   for (const selector of selectors) {
@@ -81,7 +100,7 @@ function handleSkipButton() {
   const btn = findVisibleElement(SKIP_SELECTORS);
   if (!btn) return;
 
-  btn.click();
+  forceClick(btn);
   lastSkipClick = now;
   skipped++;
   render();
@@ -108,6 +127,7 @@ function handleVideoAds() {
   const playerRoot = document.querySelector(".html5-video-player");
   if (!player || !playerRoot) return;
 
+  const now = Date.now();
   const adShowing = playerRoot.classList.contains("ad-showing");
   if (!adShowing) {
     if (forcedFastForward) {
@@ -115,6 +135,37 @@ function handleVideoAds() {
       player.muted = false;
       forcedFastForward = false;
     }
+    adStartTime = 0;
+    return;
+  }
+
+  if (!adStartTime) {
+    adStartTime = now;
+    lastVideoTime = player.currentTime;
+    lastVideoProgress = now;
+  }
+
+  if (Math.abs(player.currentTime - lastVideoTime) > 0.05) {
+    lastVideoTime = player.currentTime;
+    lastVideoProgress = now;
+  }
+
+  const adUiPresent = !!playerRoot.querySelector(
+    ".ytp-ad-player-overlay, .ytp-ad-text, .ytp-ad-preview-container, .ytp-ad-persistent-progress-bar-container"
+  );
+  const isStuckAd =
+    now - adStartTime > STUCK_AD_MS &&
+    now - lastVideoProgress > STUCK_AD_MS &&
+    !adUiPresent &&
+    player.readyState < 2;
+
+  if (isStuckAd) {
+    playerRoot.classList.remove("ad-showing", "ad-interrupting");
+    player.playbackRate = 1;
+    player.muted = false;
+    forcedFastForward = false;
+    adStartTime = 0;
+    player.play().catch(() => {});
     return;
   }
 
@@ -133,6 +184,33 @@ function handleVideoAds() {
   player.playbackRate = 16;
   player.muted = true;
   forcedFastForward = true;
+}
+
+// React immediately when YouTube injects the skip button.
+function setupSkipObserver() {
+  if (observedSkip) return;
+  const playerRoot = document.querySelector(".html5-video-player");
+  if (!playerRoot) return;
+
+  const observer = new MutationObserver(() => {
+    const btn = findVisibleElement(SKIP_SELECTORS);
+    if (btn) {
+      forceClick(btn);
+      skipped++;
+      render();
+
+      const video = document.querySelector("video.html5-main-video");
+      if (video && isFinite(video.duration) && video.duration > 0) {
+        const epsilon = 0.05;
+        if (video.currentTime < video.duration - epsilon) {
+          video.currentTime = video.duration;
+        }
+      }
+    }
+  });
+
+  observer.observe(playerRoot, { childList: true, subtree: true });
+  observedSkip = true;
 }
 
 // Remove YouTube's anti-adblock enforcement dialog and keep playback running.
@@ -172,6 +250,7 @@ setInterval(() => {
 
 setInterval(handleVideoAds, 400);
 setInterval(squashEnforcement, 800);
+setInterval(setupSkipObserver, 500);
 
 // --- Listen from background ---
 chrome.runtime.onMessage.addListener((msg) => {
