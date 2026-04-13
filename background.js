@@ -9,6 +9,7 @@ let blockingEnabled = true;
 let userDisabled = false;
 let tempDisableUntil = 0;
 let tempDisableTimer = null;
+let isWhitelistPaused = false;
 
 function loadStoredState() {
   return new Promise((resolve) => {
@@ -27,6 +28,62 @@ async function clearDynamicRules() {
     await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: ids });
     console.log("Old rules cleared:", ids);
   }
+}
+
+async function ensureRulesLoaded() {
+  const existing = await chrome.declarativeNetRequest.getDynamicRules();
+  if (existing.length) return;
+  await reloadRules();
+}
+
+async function getTabById(tabId) {
+  if (typeof tabId !== "number") return null;
+  try {
+    return await chrome.tabs.get(tabId);
+  } catch {
+    return null;
+  }
+}
+
+async function getActiveYouTubeTab() {
+  const tabs = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+    url: "*://*.youtube.com/*",
+  });
+  return tabs[0] || null;
+}
+
+async function syncRulesForTab(tab) {
+  if (tempDisableUntil > Date.now()) return;
+
+  await loadStoredState();
+
+  if (!blockingEnabled) {
+    await clearDynamicRules();
+    isWhitelistPaused = false;
+    return;
+  }
+
+  const handle = extractChannelHandle(tab?.url);
+  const shouldPause = !!handle && isWhitelistedChannel(handle, currentWhitelist);
+
+  if (shouldPause) {
+    await clearDynamicRules();
+    isWhitelistPaused = true;
+    console.log(`Whitelist pause for ${handle}`);
+    return;
+  }
+
+  // Reload after leaving a whitelisted channel page or after a worker restart
+  // where in-memory state was lost but dynamic rules may be empty.
+  if (isWhitelistPaused) {
+    isWhitelistPaused = false;
+    await reloadRules();
+    return;
+  }
+
+  await ensureRulesLoaded();
 }
 
 // --- helper: reload all rules safely ---
@@ -57,6 +114,7 @@ async function reloadRules() {
 async function initializeRules() {
   await loadStoredState();
   userDisabled = blockingEnabled === false;
+  isWhitelistPaused = false;
   if (blockingEnabled) {
     await reloadRules();
   } else {
@@ -67,6 +125,7 @@ async function initializeRules() {
 // Init on install/start
 chrome.runtime.onInstalled.addListener(initializeRules);
 chrome.runtime.onStartup.addListener(initializeRules);
+initializeRules();
 
 // Debug listener for blocked requests
 function safeSend(tabId, message) {
@@ -108,6 +167,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "updateWhitelist":
         currentWhitelist = msg.list || [];
         console.log("Whitelist:", currentWhitelist);
+        await syncRulesForTab(sender.tab || (await getActiveYouTubeTab()));
         break;
 
       case "requestStats":
@@ -127,7 +187,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (userDisabled) return;
           tempDisableUntil = 0;
           blockingEnabled = true;
-          await reloadRules();
+          await syncRulesForTab(await getActiveYouTubeTab());
         }, durationMs);
         console.log("Blocking temporarily disabled for", durationMs, "ms");
         break;
@@ -140,16 +200,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // Channel-based whitelist check
 chrome.tabs.onUpdated.addListener((id, info, tab) => {
-  if (tempDisableUntil > Date.now() || !blockingEnabled || !info.url || !tab?.url) return;
+  if (info.status !== "complete" && !info.url) return;
+  syncRulesForTab(tab || { id, url: info.url }).catch((error) =>
+    console.error("syncRulesForTab failed:", error)
+  );
+});
 
-  const handle = extractChannelHandle(tab.url);
-  if (!handle) return;
-
-  if (isWhitelistedChannel(handle, currentWhitelist)) {
-    clearDynamicRules().then(() => console.log(`Whitelist pause for ${handle}`));
-  } else {
-    reloadRules();
-  }
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  const tab = await getTabById(tabId);
+  await syncRulesForTab(tab);
 });
 
 console.log("Service-worker ready.");

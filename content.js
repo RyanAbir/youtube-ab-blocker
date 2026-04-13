@@ -15,7 +15,6 @@ Object.assign(box.style, {
   pointerEvents: "none",
 });
 box.textContent = "AdBlock: starting...";
-document.body.appendChild(box);
 
 let skipped = 0;
 let closed = 0;
@@ -32,6 +31,7 @@ let trackedVideo = null;
 let lastFrameTime = 0;
 let lastTempDisable = 0;
 let userPaused = false;
+let lastPlayerSkip = 0;
 
 function render() {
   if (!blockingEnabled) {
@@ -52,15 +52,32 @@ function render() {
 }
 
 const SKIP_SELECTORS = [
+  "button.ytp-ad-skip-button-modern",
+  "button.ytp-ad-skip-button",
   ".ytp-ad-skip-button",
   ".ytp-ad-skip-button-modern",
   ".ytp-ad-skip-button-icon",
   ".ytp-ad-player-overlay-skip-button",
+  ".ytp-ad-skip-button-slot",
 ];
 const OVERLAY_SELECTORS = [
+  "button.ytp-ad-overlay-close-button",
   ".ytp-ad-overlay-close-button",
   ".ytp-ad-image-overlay-close-button",
   ".ytp-ad-overlay-close-button-icon",
+];
+const AD_UI_SELECTORS = [
+  ".ytp-ad-player-overlay",
+  ".ytp-ad-text",
+  ".ytp-ad-preview-container",
+  ".ytp-ad-persistent-progress-bar-container",
+  ".ytp-ad-simple-ad-badge",
+  ".ytp-ad-duration-remaining",
+  ".ytp-ad-timer",
+  ".ytp-ad-badge",
+  ".ytp-ad-badge--engagement",
+  ".ytp-ad-message-container",
+  ".ytp-ad-skip-button-container",
 ];
 const ENFORCEMENT_SELECTORS = [
   "ytd-enforcement-message-view-model",
@@ -69,12 +86,31 @@ const ENFORCEMENT_SELECTORS = [
   "tp-yt-iron-overlay-backdrop",
 ];
 const CLICK_DEBOUNCE = 400;
-const STUCK_AD_MS = 2000;
+const STUCK_AD_MS = 1200;
 const STUCK_PLAYBACK_MS = 3500;
 const TEMP_DISABLE_COOLDOWN_MS = 60000;
+const PLAYER_SKIP_DEBOUNCE = 250;
+const MAX_AD_JUMP_SECONDS = 180;
+const OBSERVER_DEBOUNCE = 120;
+const RECOVERY_DISABLE_MS = 2500;
 let lastSkipClick = 0;
 let lastOverlayClick = 0;
 let observedSkip = false;
+let lastObserverRun = 0;
+let overlayMounted = false;
+let playerObserver = null;
+
+function mountOverlay() {
+  if (overlayMounted || !document.body) return;
+  document.body.appendChild(box);
+  overlayMounted = true;
+}
+
+if (document.body) {
+  mountOverlay();
+} else {
+  document.addEventListener("DOMContentLoaded", mountOverlay, { once: true });
+}
 
 function forceClick(el) {
   const events = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
@@ -97,17 +133,122 @@ function isVisibleElement(el) {
   if (!style) return false;
   if (style.display === "none" || style.visibility === "hidden") return false;
   if (Number(style.opacity) === 0) return false;
+  if (style.pointerEvents === "none") return false;
   return true;
 }
 
 function findVisibleElement(selectors) {
   for (const selector of selectors) {
-    const el = document.querySelector(selector);
-    if (!el) continue;
-    if (!isVisibleElement(el)) continue;
-    return el;
+    const nodes = document.querySelectorAll(selector);
+    for (const el of nodes) {
+      if (!isVisibleElement(el)) continue;
+      return el;
+    }
   }
   return null;
+}
+
+function getPlayerRoot() {
+  return document.querySelector(".html5-video-player");
+}
+
+function getVideoPlayer() {
+  return document.querySelector("video.html5-main-video");
+}
+
+function getAdContext() {
+  const playerRoot = getPlayerRoot();
+  const player = getVideoPlayer();
+  const adUiPresent = !!findVisibleElement(AD_UI_SELECTORS);
+  return {
+    player,
+    playerRoot,
+    adUiPresent,
+    adShowing: isAdShowing(playerRoot, adUiPresent),
+  };
+}
+
+function resolveClickable(el) {
+  if (!el) return null;
+  if (el.matches("button,[role='button']")) return el;
+  const btn = el.querySelector("button,[role='button']");
+  if (btn && isVisibleElement(btn)) return btn;
+  return el;
+}
+
+function isAdShowing(playerRoot, adUiPresent) {
+  if (playerRoot?.classList.contains("ad-showing")) return true;
+  if (playerRoot?.classList.contains("ad-interrupting")) return true;
+  const moviePlayer = document.getElementById("movie_player");
+  if (moviePlayer?.classList.contains("ad-showing")) return true;
+  if (moviePlayer?.classList.contains("ad-interrupting")) return true;
+  const ytdPlayer = document.querySelector("ytd-player");
+  if (ytdPlayer?.classList.contains("ad-showing")) return true;
+  if (ytdPlayer?.classList.contains("ad-interrupting")) return true;
+  return !!adUiPresent;
+}
+
+function sendSkipCommands(now = Date.now()) {
+  if (now - lastPlayerSkip <= PLAYER_SKIP_DEBOUNCE) return false;
+  sendPlayerCommand("skipAd");
+  sendPlayerCommand("cancelAd");
+  lastPlayerSkip = now;
+  return true;
+}
+
+function jumpAdToEnd(player, playerRoot) {
+  if (
+    !player ||
+    !isFinite(player.duration) ||
+    player.duration <= 0 ||
+    player.duration > MAX_AD_JUMP_SECONDS
+  ) {
+    return false;
+  }
+
+  const epsilon = 0.05;
+  if (player.currentTime < player.duration - epsilon) {
+    player.currentTime = player.duration;
+    skipped++;
+    render();
+  } else {
+    recoverPlayback(player, playerRoot);
+  }
+  return true;
+}
+
+function clickDismissTarget(selectors, lastClickAt, onSuccess) {
+  const now = Date.now();
+  if (now - lastClickAt < CLICK_DEBOUNCE) return lastClickAt;
+
+  const target = resolveClickable(findVisibleElement(selectors));
+  if (!target) return lastClickAt;
+
+  forceClick(target);
+  if (typeof target.click === "function") {
+    target.click();
+  }
+  onSuccess();
+  return now;
+}
+
+function attemptAdDismiss() {
+  if (!blockingEnabled) return;
+  const { player, playerRoot, adUiPresent } = getAdContext();
+  if (!adUiPresent) return;
+
+  sendSkipCommands();
+  jumpAdToEnd(player, playerRoot);
+
+  lastSkipClick = clickDismissTarget(SKIP_SELECTORS, lastSkipClick, () => {
+    skipped++;
+    render();
+  });
+
+  lastOverlayClick = clickDismissTarget(OVERLAY_SELECTORS, lastOverlayClick, () => {
+    closed++;
+    render();
+  });
 }
 
 function injectPlayerBridge() {
@@ -141,6 +282,33 @@ function sendPlayerCommand(cmd) {
   window.dispatchEvent(new CustomEvent("ytAdBlocker:command", { detail: cmd }));
 }
 
+injectPlayerBridge();
+
+function recoverPlayback(player, playerRoot, { tempDisable = false } = {}) {
+  playerRoot?.classList.remove("ad-showing", "ad-interrupting", "ad-created");
+  const moviePlayer = document.getElementById("movie_player");
+  moviePlayer?.classList.remove("ad-showing", "ad-interrupting", "ad-created");
+
+  if (player) {
+    player.playbackRate = 1;
+    player.muted = false;
+    player.play().catch(() => {});
+  }
+
+  forcedFastForward = false;
+  adStartTime = 0;
+  sendPlayerCommand("cancelAd");
+  sendPlayerCommand("skipAd");
+  sendPlayerCommand("play");
+
+  if (tempDisable) {
+    chrome.runtime.sendMessage({
+      action: "tempDisableBlocking",
+      durationMs: RECOVERY_DISABLE_MS,
+    });
+  }
+}
+
 function ensureFrameCallback(video) {
   if (!video || typeof video.requestVideoFrameCallback !== "function") return;
   if (trackedVideo === video) return;
@@ -158,47 +326,36 @@ function tempDisableBlocking() {
   const now = Date.now();
   if (now - lastTempDisable < TEMP_DISABLE_COOLDOWN_MS) return;
   lastTempDisable = now;
-  chrome.runtime.sendMessage({ action: "tempDisableBlocking", durationMs: 15000 });
+  chrome.runtime.sendMessage({ action: "tempDisableBlocking", durationMs: RECOVERY_DISABLE_MS });
 }
 
 function handleSkipButton() {
   if (!blockingEnabled) return;
-  const playerRoot = document.querySelector(".html5-video-player");
-  if (!playerRoot || !playerRoot.classList.contains("ad-showing")) return;
-  const now = Date.now();
-  if (now - lastSkipClick < CLICK_DEBOUNCE) return;
+  const { adShowing } = getAdContext();
+  if (!adShowing) return;
 
-  const btn = findVisibleElement(SKIP_SELECTORS);
-  if (!btn) return;
-
-  forceClick(btn);
-  lastSkipClick = now;
-  skipped++;
-  sendPlayerCommand("skipAd");
-  render();
+  lastSkipClick = clickDismissTarget(SKIP_SELECTORS, lastSkipClick, () => {
+    skipped++;
+    sendPlayerCommand("skipAd");
+    render();
+  });
 }
 
 function handleOverlayClose() {
   if (!blockingEnabled) return;
-  const playerRoot = document.querySelector(".html5-video-player");
-  if (!playerRoot || !playerRoot.classList.contains("ad-showing")) return;
-  const now = Date.now();
-  if (now - lastOverlayClick < CLICK_DEBOUNCE) return;
+  const { adShowing } = getAdContext();
+  if (!adShowing) return;
 
-  const btn = findVisibleElement(OVERLAY_SELECTORS);
-  if (!btn) return;
-
-  btn.click();
-  lastOverlayClick = now;
-  closed++;
-  render();
+  lastOverlayClick = clickDismissTarget(OVERLAY_SELECTORS, lastOverlayClick, () => {
+    closed++;
+    render();
+  });
 }
 
 function handleVideoAds() {
   if (!blockingEnabled) return;
 
-  const player = document.querySelector("video.html5-main-video");
-  const playerRoot = document.querySelector(".html5-video-player");
+  const { player, playerRoot, adUiPresent, adShowing } = getAdContext();
   if (!player || !playerRoot) return;
   ensureFrameCallback(player);
 
@@ -213,7 +370,6 @@ function handleVideoAds() {
     lastPlaybackProgress = now;
   }
 
-  const adShowing = playerRoot.classList.contains("ad-showing");
   if (!adShowing) {
     if (forcedFastForward) {
       player.playbackRate = 1;
@@ -235,51 +391,35 @@ function handleVideoAds() {
     lastVideoProgress = now;
   }
 
-  const adUiPresent = !!findVisibleElement([
-    ".ytp-ad-player-overlay",
-    ".ytp-ad-text",
-    ".ytp-ad-preview-container",
-    ".ytp-ad-persistent-progress-bar-container",
-    ".ytp-ad-simple-ad-badge",
-    ".ytp-ad-duration-remaining",
-    ".ytp-ad-timer",
-  ]);
+  sendSkipCommands(now);
+
   const isStuckAd =
     now - adStartTime > STUCK_AD_MS &&
     now - lastVideoProgress > STUCK_AD_MS &&
     !adUiPresent;
 
   if (isStuckAd) {
-    playerRoot.classList.remove("ad-showing", "ad-interrupting");
-    player.playbackRate = 1;
-    player.muted = false;
-    forcedFastForward = false;
-    adStartTime = 0;
-    player.play().catch(() => {});
-    sendPlayerCommand("cancelAd");
-    sendPlayerCommand("skipAd");
-    sendPlayerCommand("play");
+    recoverPlayback(player, playerRoot);
     tempDisableBlocking();
     return;
   }
 
-  // If YouTube claims an ad is showing but we don't see ad UI, avoid forcing
-  // jumps/fast-forwarding that can stall the main video.
+  if (jumpAdToEnd(player, playerRoot)) {
+    return;
+  }
+
+  // If YouTube claims an ad is showing but we don't see ad UI, force fast
+  // progress rather than waiting for the overlay to appear.
   if (!adUiPresent) {
     if (player.paused) {
       player.play().catch(() => {});
       sendPlayerCommand("play");
     }
-    return;
-  }
-
-  // Attempt to jump to the end of the ad immediately
-  if (isFinite(player.duration) && player.duration > 0) {
-    const epsilon = 0.05;
-    if (player.currentTime < player.duration - epsilon && player.duration <= 60) {
-      player.currentTime = player.duration;
-      skipped++;
-      render();
+    player.playbackRate = 16;
+    player.muted = true;
+    forcedFastForward = true;
+    if (now - adStartTime > STUCK_AD_MS) {
+      recoverPlayback(player, playerRoot);
     }
     return;
   }
@@ -292,11 +432,16 @@ function handleVideoAds() {
 
 // React immediately when YouTube injects the skip button.
 function setupSkipObserver() {
-  if (observedSkip) return;
+  if (observedSkip && playerObserver) return;
   const playerRoot = document.querySelector(".html5-video-player");
   if (!playerRoot) return;
 
-  const observer = new MutationObserver(() => {
+  playerObserver?.disconnect();
+
+  playerObserver = new MutationObserver(() => {
+    handleVideoAds();
+    attemptAdDismiss();
+
     const btn = findVisibleElement(SKIP_SELECTORS);
     if (btn) {
       forceClick(btn);
@@ -304,7 +449,7 @@ function setupSkipObserver() {
       sendPlayerCommand("skipAd");
       render();
 
-      const video = document.querySelector("video.html5-main-video");
+      const video = getVideoPlayer();
       if (video && isFinite(video.duration) && video.duration > 0) {
         const epsilon = 0.05;
         if (video.currentTime < video.duration - epsilon) {
@@ -314,7 +459,8 @@ function setupSkipObserver() {
     }
   });
 
-  observer.observe(playerRoot, { childList: true, subtree: true });
+  playerObserver.observe(playerRoot, { childList: true, subtree: true });
+  playerObserver.observe(playerRoot, { attributes: true, attributeFilter: ["class"] });
   observedSkip = true;
 }
 
@@ -351,11 +497,12 @@ function squashEnforcement() {
 setInterval(() => {
   handleSkipButton();
   handleOverlayClose();
-}, 200);
+}, 100);
 
-setInterval(handleVideoAds, 400);
+setInterval(handleVideoAds, 150);
 setInterval(squashEnforcement, 800);
-setInterval(setupSkipObserver, 500);
+setInterval(setupSkipObserver, 250);
+setInterval(attemptAdDismiss, 75);
 
 // Playback recovery when video stalls without ad UI (black screen guard).
 setInterval(() => {
@@ -374,13 +521,7 @@ setInterval(() => {
     player.readyState < 2;
 
   if (stalledTooLong) {
-    playerRoot.classList.remove("ad-showing", "ad-interrupting");
-    player.playbackRate = 1;
-    player.muted = false;
-    player.play().catch(() => {});
-    sendPlayerCommand("play");
-    sendPlayerCommand("seekStart");
-    tempDisableBlocking();
+    recoverPlayback(player, playerRoot, { tempDisable: true });
   }
 }, 700);
 
@@ -408,6 +549,27 @@ document.addEventListener(
   },
   true
 );
+
+// Aggressive observer for late-loading ad UI.
+const adObserver = new MutationObserver(() => {
+  const now = Date.now();
+  if (now - lastObserverRun < OBSERVER_DEBOUNCE) return;
+  lastObserverRun = now;
+  attemptAdDismiss();
+});
+if (document.body) {
+  adObserver.observe(document.body, { childList: true, subtree: true });
+} else {
+  document.addEventListener(
+    "DOMContentLoaded",
+    () => {
+      if (document.body) {
+        adObserver.observe(document.body, { childList: true, subtree: true });
+      }
+    },
+    { once: true }
+  );
+}
 
 // --- Listen from background ---
 chrome.runtime.onMessage.addListener((msg) => {
